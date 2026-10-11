@@ -23,12 +23,36 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ComposeFile = (Join-Path $PSScriptRoot 'compose.stubs.yaml'),
+    [string]$ComposeFile = '',
     [string]$Project = 'gwtest',
     [string]$BaseUrl = 'http://127.0.0.1:8080',
     [switch]$Keep,
     [switch]$OmitirLentas
 )
+
+# Buscar el compose una vez terminado param(...). Esto evita evaluar Join-Path
+# con PSScriptRoot vacio durante la inicializacion de parametros en PS 5.1.
+if ([string]::IsNullOrEmpty($ComposeFile)) {
+    $dirs = @()
+    if (-not [string]::IsNullOrEmpty($PSScriptRoot)) { $dirs += $PSScriptRoot }
+    if ($MyInvocation.MyCommand.Path) {
+        $dirs += (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    }
+    $cwd = (Get-Location).Path
+    $dirs += (Join-Path $cwd 'tests')
+    $dirs += $cwd
+    foreach ($dir in $dirs) {
+        $candidate = Join-Path $dir 'compose.stubs.yaml'
+        if (Test-Path $candidate) {
+            $ComposeFile = (Resolve-Path $candidate).Path
+            break
+        }
+    }
+    if ([string]::IsNullOrEmpty($ComposeFile)) {
+        Write-Host 'No se encontro compose.stubs.yaml. Ejecuta desde la raiz del repositorio o usa -ComposeFile.' -ForegroundColor Red
+        exit 2
+    }
+}
 
 # Con 'Continue' los avisos que docker escribe por stderr no abortan el script en PS 5.1.
 $ErrorActionPreference = 'Continue'
@@ -112,6 +136,9 @@ function Send-Gw {
     if (-not [string]::IsNullOrEmpty($Body)) {
         $req.Content = New-Object System.Net.Http.StringContent($Body, [System.Text.Encoding]::UTF8, $ContentType)
     }
+    $sentLen = ''
+    if ($req.Content) { $sentLen = [string]$req.Content.Headers.ContentLength }
+    $sentChunked = [bool]$req.Headers.TransferEncodingChunked
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $resp = $client.SendAsync($req).GetAwaiter().GetResult()
@@ -122,10 +149,10 @@ function Send-Gw {
         foreach ($x in $resp.Content.Headers) { $h[$x.Key.ToLower()] = ($x.Value -join ',') }
         $loc = ''
         if ($resp.Headers.Location) { $loc = $resp.Headers.Location.OriginalString }
-        return [pscustomobject]@{ Status = [int]$resp.StatusCode; Body = $text; Headers = $h; Location = $loc; Ms = $sw.ElapsedMilliseconds; Error = '' }
+        return [pscustomobject]@{ Status = [int]$resp.StatusCode; Body = $text; Headers = $h; Location = $loc; Ms = $sw.ElapsedMilliseconds; Error = ''; SentLength = $sentLen; SentChunked = $sentChunked }
     } catch {
         $sw.Stop()
-        return [pscustomobject]@{ Status = 0; Body = ''; Headers = @{}; Location = ''; Ms = $sw.ElapsedMilliseconds; Error = $_.Exception.Message }
+        return [pscustomobject]@{ Status = 0; Body = ''; Headers = @{}; Location = ''; Ms = $sw.ElapsedMilliseconds; Error = $_.Exception.Message; SentLength = $sentLen; SentChunked = $sentChunked }
     }
 }
 
@@ -160,6 +187,16 @@ function Brief {
     $t = ($Response.Body -replace "\s+", ' ')
     if ($t.Length -gt 120) { $t = $t.Substring(0, 120) }
     ("estado=" + $Response.Status + " " + $Response.Error + " cuerpo=" + $t)
+}
+
+# Mostrar detalles solo si falla una solicitud con cuerpo grande.
+function Show-Diag {
+    param($Response)
+    $t = ($Response.Body -replace "\s+", ' ')
+    if ($t.Length -gt 160) { $t = $t.Substring(0, 160) }
+    Write-Host ("          enviado : Content-Length=" + $Response.SentLength + " chunked=" + $Response.SentChunked) -ForegroundColor Yellow
+    Write-Host ("          recibido: estado=" + $Response.Status + " ms=" + $Response.Ms + " error='" + $Response.Error + "'") -ForegroundColor Yellow
+    Write-Host ("          cuerpo  : " + $t) -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------- preparacion
@@ -257,9 +294,19 @@ try {
     $r = Send-Gw 'POST' '/api/ia/prueba' -Body $json
     Check 'POST /api/ia/... entrega a ia el cuerpo JSON intacto y su Content-Type' (($r.Body.Contains($json)) -and (Has-Prefix $r 'Content-Type: application/json')) (Brief $r)
 
-    $big = 'a' * 900000
-    $r = Send-Gw 'POST' '/api/dominio/grande' -Body $big -ContentType 'text/plain'
-    Check 'Un cuerpo de 900000 bytes llega completo a dominio' (Has-Line $r 'Content-Length: 900000') (Brief $r)
+    # La prueba anterior revisaba el eco de whoami, que no es un indicador fiable
+    # de un cuerpo grande. /health decodifica un numero JSON del cuerpo recibido.
+    # Si 200 esta al FINAL de 900000 bytes, el servidor debe leer hasta ese punto.
+    $null = Send-Gw 'POST' '/api/dominio/health' -Body '503'
+    $beforeBig = Send-Gw 'GET' '/api/dominio/health'
+    $big = (' ' * 899997) + '200'
+    $r = Send-Gw 'POST' '/api/dominio/health' -Body $big
+    $afterBig = Send-Gw 'GET' '/api/dominio/health'
+    $bigOk = (($beforeBig.Status -eq 503) -and ($r.Status -eq 200) -and ($afterBig.Status -eq 200) -and ($r.SentLength -eq '900000'))
+    Check 'Un cuerpo de 900000 bytes llega completo a dominio' $bigOk ("antes=" + $beforeBig.Status + " POST=" + $r.Status + " despues=" + $afterBig.Status + " enviado=" + $r.SentLength)
+    if (-not $bigOk) { Show-Diag $r }
+    # Restablecer el estado de whoami para evitar errores en pruebas posteriores.
+    $null = Send-Gw 'POST' '/api/dominio/health' -Body '200'
 
     $r = Send-Gw 'POST' '/'
     $j = Get-Json $r.Body
