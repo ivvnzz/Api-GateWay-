@@ -1,0 +1,32 @@
+
+# Entorno de pruebas del API Gateway - Nexus Retail
+# No es el compose.yaml definitivo de la EP2.
+
+name: gwtest
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: nexus-gateway:stubs
+    ports:
+      - "8080:8080"
+
+  front:
+    image: traefik/whoami:v1.12.0
+    environment:
+      WHOAMI_NAME: front
+      WHOAMI_PORT_NUMBER: "80"
+
+  dominio:
+    image: traefik/whoami:v1.12.0
+    environment:
+      WHOAMI_NAME: dominio
+      WHOAMI_PORT_NUMBER: "3000"
+
+  ia:
+    image: traefik/whoami:v1.12.0
+    environment:
+      WHOAMI_NAME: ia
+      WHOAMI_PORT_NUMBER: "8000"
