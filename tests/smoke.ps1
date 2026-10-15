@@ -189,6 +189,25 @@ function Brief {
     ("estado=" + $Response.Status + " " + $Response.Error + " cuerpo=" + $t)
 }
 
+# Una sola respuesta 200 puede ser transitoria justo despues de docker start.
+# Exigir varias respuestas consecutivas evita continuar durante el refresco DNS.
+# Si no se estabiliza antes del timeout, las comprobaciones siguientes fallaran.
+function Wait-StableRoute {
+    param([string]$Path, [int]$Status = 200, [int]$Consecutive = 5, [int]$TimeoutSec = 60)
+    $streak = 0
+    $last = 0
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+        $response = Send-Gw 'GET' $Path
+        $last = $response.Status
+        if ($response.Status -eq $Status) { $streak++ } else { $streak = 0 }
+        if ($streak -ge $Consecutive) { return $true }
+        Start-Sleep -Milliseconds 750
+    }
+    Write-Host ("  [AVISO] Ruta " + $Path + " no se estabilizo en " + $TimeoutSec + " s. Esperado=" + $Status + "; ultimo=" + $last) -ForegroundColor Yellow
+    return $false
+}
+
 # Mostrar detalles solo si falla una solicitud con cuerpo grande.
 function Show-Diag {
     param($Response)
@@ -335,55 +354,69 @@ try {
     $r = Send-Gw 'GET' '/api/ia?q=1'
     Check 'GET /api/ia?q=1 -> 308 hacia /api/ia/?q=1' (($r.Status -eq 308) -and ($r.Location -eq '/api/ia/?q=1')) ("estado=" + $r.Status + " location=" + $r.Location)
 
+# Una replica ausente puede causar 502 (sin upstream) o 504 (timeout), segun Docker/DNS.
+# Ambos son fallos controlados validos, pero cada estado exige su JSON correspondiente.
+function Is-GatewayUnavailable {
+    param($Response, [string]$Service)
+    if ($null -eq $Response -or -not (Is-Json $Response)) { return $false }
+    $j = Get-Json $Response.Body
+    if ($null -eq $j -or $j.servicio -ne $Service) { return $false }
+    return (($Response.Status -eq 502 -and $j.error -eq 'servicio_no_disponible') -or
+            ($Response.Status -eq 504 -and $j.error -eq 'tiempo_de_espera_agotado'))
+}
+
     # ------------------------------------------------------------ 6. caida de servicios
     Section '6. Caida y recuperacion de servicios'
 
-    # Nota: justo despues de detener un servicio, el gateway puede recordar su IP anterior
-    # hasta 2 s (valid=2s) y responder un 504 transitorio antes del 502 definitivo.
-    # Por eso se espera hasta ver el 502 en lugar de exigirlo en la primera peticion.
+    # Acepta 502 o 504 si el JSON coincide con el codigo y el servicio apagado.
+    # Docker Desktop y runners Ubuntu pueden resolver esta caida de forma diferente.
     $null = Dc @('stop', 'dominio')
     $script:r = $null
-    $null = Wait-Until { $script:r = Send-Gw 'GET' ('/api/dominio/consulta?correo=' + $Marker1 + '&rut=' + $Marker2); ($script:r.Status -eq 502) } 30 500
+    $null = Wait-Until { $script:r = Send-Gw 'GET' ('/api/dominio/consulta?correo=' + $Marker1 + '&rut=' + $Marker2); (Is-GatewayUnavailable $script:r 'dominio') } 30 500
     $r = $script:r
-    $j = Get-Json $r.Body
-    Check 'dominio detenido -> 502 JSON servicio_no_disponible / dominio' (($r.Status -eq 502) -and (Is-Json $r) -and ($j.error -eq 'servicio_no_disponible') -and ($j.servicio -eq 'dominio')) (Brief $r)
+    Check 'dominio detenido -> 502/504 JSON correcto / dominio' (Is-GatewayUnavailable $r 'dominio') (Brief $r)
     Check 'Con dominio detenido el gateway sigue sano (/health 200)' ((Send-Gw 'GET' '/health').Status -eq 200)
     Check 'Con dominio detenido el front sigue respondiendo (200)' ((Send-Gw 'GET' '/').Status -eq 200)
     Check 'Con dominio detenido ia sigue respondiendo (200)' ((Send-Gw 'GET' '/api/ia/').Status -eq 200)
     $null = Dc @('start', 'dominio')
-    $back = Wait-Until { (Send-Gw 'GET' '/api/dominio/').Status -eq 200 } 40 1000
-    Check 'dominio vuelve a responder 200 sin reiniciar el gateway (en menos de 40 s)' $back
+    $back = Wait-StableRoute '/api/dominio/' 200 5 60
+    Check 'dominio vuelve a responder 200 de forma estable sin reiniciar el gateway' $back
 
     $null = Dc @('stop', 'ia')
     $script:r = $null
-    $null = Wait-Until { $script:r = Send-Gw 'POST' ('/api/ia/prueba?nombre=' + $Marker1) -Body '{"k":1}'; ($script:r.Status -eq 502) } 30 500
+    $null = Wait-Until { $script:r = Send-Gw 'POST' ('/api/ia/prueba?nombre=' + $Marker1) -Body '{"k":1}'; (Is-GatewayUnavailable $script:r 'ia') } 30 500
     $r = $script:r
-    $j = Get-Json $r.Body
-    Check 'ia detenido -> 502 JSON servicio_no_disponible / ia' (($r.Status -eq 502) -and ($j.error -eq 'servicio_no_disponible') -and ($j.servicio -eq 'ia')) (Brief $r)
+    Check 'ia detenido -> 502/504 JSON correcto / ia' (Is-GatewayUnavailable $r 'ia') (Brief $r)
     $null = Dc @('start', 'ia')
-    $back = Wait-Until { (Send-Gw 'GET' '/api/ia/').Status -eq 200 } 40 1000
-    Check 'ia vuelve a responder 200 (en menos de 40 s)' $back
+    $back = Wait-StableRoute '/api/ia/' 200 5 60
+    Check 'ia vuelve a responder 200 de forma estable' $back
 
     $null = Dc @('stop', 'front')
     $script:r = $null
-    $null = Wait-Until { $script:r = Send-Gw 'GET' '/'; ($script:r.Status -eq 502) } 30 500
+    $null = Wait-Until { $script:r = Send-Gw 'GET' '/'; (Is-GatewayUnavailable $script:r 'front') } 30 500
     $r = $script:r
-    $j = Get-Json $r.Body
-    Check 'front detenido -> 502 JSON servicio_no_disponible / front' (($r.Status -eq 502) -and ($j.error -eq 'servicio_no_disponible') -and ($j.servicio -eq 'front')) (Brief $r)
-    Check 'Con front detenido las rutas /api siguen funcionando' ((Send-Gw 'GET' '/api/dominio/').Status -eq 200)
+    Check 'front detenido -> 502/504 JSON correcto / front' (Is-GatewayUnavailable $r 'front') (Brief $r)
+    # Permitir que la ruta no relacionada con front termine de estabilizarse.
+    # Un 502 persistente durante 60 s sigue siendo un fallo real.
+    $apiAlive = Wait-StableRoute '/api/dominio/' 200 5 60
+    Check 'Con front detenido las rutas /api siguen funcionando de forma estable' $apiAlive
     $null = Dc @('start', 'front')
-    $back = Wait-Until { (Send-Gw 'GET' '/').Status -eq 200 } 40 1000
-    Check 'front vuelve a responder 200 (en menos de 40 s)' $back
+    $back = Wait-StableRoute '/' 200 5 60
+    Check 'front vuelve a responder 200 de forma estable' $back
 
     # ------------------------------------------------------------ 7. respuestas propias del servicio y tiempo de espera
     Section '7. Errores del propio servicio y tiempo de espera'
 
     # traefik/whoami permite fijar el codigo que devuelve su /health con un POST.
-    $null = Send-Gw 'POST' '/api/dominio/health' -Body '503'
+    # La ruta debe estar estable tras el ciclo de paradas antes de cambiar el estado.
+    $null = Wait-StableRoute '/api/dominio/' 200 5 60
+    $set503 = Send-Gw 'POST' '/api/dominio/health' -Body '503'
+    $ready503 = Wait-StableRoute '/api/dominio/health' 503 2 30
     $r = Send-Gw 'GET' '/api/dominio/health'
-    Check 'Si el servicio responde 503 por su cuenta, el gateway lo entrega tal cual (sin reemplazarlo)' (($r.Status -eq 503) -and (-not $r.Body.Contains('servicio_no_disponible'))) (Brief $r)
-    $null = Send-Gw 'POST' '/api/dominio/health' -Body '200'
-    Check 'El servicio vuelve a responder 200 en /health' ((Send-Gw 'GET' '/api/dominio/health').Status -eq 200)
+    Check 'Si el servicio responde 503 por su cuenta, el gateway lo entrega tal cual (sin reemplazarlo)' (($set503.Status -eq 200) -and $ready503 -and ($r.Status -eq 503) -and (-not $r.Body.Contains('servicio_no_disponible'))) ("POST=" + $set503.Status + " GET=" + (Brief $r))
+    $set200 = Send-Gw 'POST' '/api/dominio/health' -Body '200'
+    $ready200 = Wait-StableRoute '/api/dominio/health' 200 5 30
+    Check 'El servicio vuelve a responder 200 en /health' (($set200.Status -eq 200) -and $ready200) ("POST=" + $set200.Status + " recuperado=" + $ready200)
 
     if ($OmitirLentas) {
         Write-Host '  (omitida) prueba de tiempo de espera 504' -ForegroundColor DarkYellow

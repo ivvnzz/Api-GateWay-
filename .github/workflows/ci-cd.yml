@@ -1,0 +1,148 @@
+name: API Gateway - CI y GHCR
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - ep2
+
+# El permiso para publicar paquetes se concede solamente al job de publicacion.
+permissions:
+  contents: read
+
+jobs:
+  validar:
+    name: Probar y construir gateway
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v6
+
+      - name: Comprobar herramientas
+        shell: bash
+        run: |
+          docker version
+          docker compose version
+          pwsh --version
+          docker compose -f tests/compose.stubs.yaml config --quiet
+
+      # Los scripts gestionan y limpian sus entornos Docker por separado.
+      - name: Pruebas de enrutamiento (F2)
+        shell: bash
+        run: pwsh -NoLogo -NoProfile -File ./tests/smoke.ps1
+
+      - name: Pruebas de balanceo (F3)
+        shell: bash
+        run: pwsh -NoLogo -NoProfile -File ./tests/balanceo.ps1
+
+      # Build solo despues de las pruebas; en un PR nunca se publica.
+      - name: Construir imagen linux/amd64
+        shell: bash
+        run: |
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t nexus-gateway:ci .
+
+      - name: Validar Nginx, arquitectura y revision OCI
+        shell: bash
+        run: |
+          docker run --rm nexus-gateway:ci nginx -t
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' nexus-gateway:ci)" = 'linux/amd64'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' nexus-gateway:ci)" = "$GITHUB_SHA"
+
+  publicar_main:
+    name: Publicar latest y sha en GHCR
+    needs: validar
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v6
+
+      - name: Preparar Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Iniciar sesion en GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preparar etiquetas e informacion OCI
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/ivvnzz/nexus-gateway
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=Nexus Retail API Gateway
+            org.opencontainers.image.description=Nginx gateway para Nexus Retail EP2
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Construir y publicar linux/amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+
+  publicar_ep2:
+    name: Etiquetar la imagen de main como ep2
+    needs: validar
+    if: github.event_name == 'push' && github.ref == 'refs/tags/ep2'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Obtener historial completo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Preparar Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Iniciar sesion en GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ep2 debe apuntar a un commit ya incluido en main, con sha ya publicado.
+      # Reutiliza la imagen publicada, sin compilar una variante nueva.
+      - name: Verificar commit y publicar tag ep2
+        shell: bash
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo '::error::El tag ep2 debe apuntar a un commit que este en main.'
+            exit 1
+          fi
+
+          IMAGE='ghcr.io/ivvnzz/nexus-gateway'
+          SHA="$(git rev-parse HEAD)"
+          docker buildx imagetools inspect "${IMAGE}:sha-${SHA}"
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${IMAGE}:ep2" "${IMAGE}:sha-${SHA}"
+          docker buildx imagetools inspect "${IMAGE}:ep2"
