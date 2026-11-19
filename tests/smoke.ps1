@@ -309,6 +309,10 @@ try {
         Check ("dominio recibe el metodo " + $m) (Has-Line $r ($m + ' /metodo HTTP/1.1')) (Brief $r)
     }
 
+    $predict = '{"usuario_id":"U100406","k":8}'
+    $r = Send-Gw 'POST' '/api/predict' -Body $predict
+    Check 'POST /api/predict llega a POST /predict del dominio' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'POST /predict HTTP/1.1') -and ($r.Body.Contains($predict))) (Brief $r)
+
     $json = '{"usuario":"u1","k":[1,2,3]}'
     $r = Send-Gw 'POST' '/api/ia/prueba' -Body $json
     Check 'POST /api/ia/... entrega a ia el cuerpo JSON intacto y su Content-Type' (($r.Body.Contains($json)) -and (Has-Prefix $r 'Content-Type: application/json')) (Brief $r)
@@ -457,9 +461,10 @@ function Is-GatewayUnavailable {
     $rows = @($ps | Where-Object { $_ -match '\|' })
     $published = @($rows | Where-Object { ($_ -split '\|', 2)[1] -match '->' })
     $hostPorts = @($published | ForEach-Object { [regex]::Matches(($_ -split '\|', 2)[1], ':(\d+)->') | ForEach-Object { $_.Groups[1].Value } } | Select-Object -Unique)
+    $expectedHostPort = ([uri]$BaseUrl).Port.ToString()
     Check 'Hay 4 contenedores en el entorno de pruebas' ($rows.Count -eq 4) ("contenedores=" + $rows.Count)
     Check 'Solo un contenedor publica puertos y es el gateway' (($published.Count -eq 1) -and ($published[0] -match 'gateway')) (($rows | ForEach-Object { $_ }) -join ' ; ')
-    Check 'El unico puerto publicado hacia el host es el 8080' (($hostPorts.Count -eq 1) -and ($hostPorts[0] -eq '8080')) ("puertos=" + ($hostPorts -join ','))
+    Check ('El unico puerto publicado hacia el host es el ' + $expectedHostPort) (($hostPorts.Count -eq 1) -and ($hostPorts[0] -eq $expectedHostPort)) ("puertos=" + ($hostPorts -join ','))
 
 }
 finally {

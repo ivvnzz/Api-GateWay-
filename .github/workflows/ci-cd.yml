@@ -10,6 +10,7 @@ on:
       - main
     tags:
       - ep2
+      - ep3
 
 # El permiso para publicar paquetes se concede solamente al job de publicacion.
 permissions:
@@ -105,10 +106,10 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
 
-  publicar_ep2:
-    name: Etiquetar la imagen de main como ep2
+  publicar_etiqueta:
+    name: Etiquetar la imagen de main con el tag de entrega
     needs: validar
-    if: github.event_name == 'push' && github.ref == 'refs/tags/ep2'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -129,14 +130,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ep2 debe apuntar a un commit ya incluido en main, con sha ya publicado.
+      # El tag debe apuntar a un commit ya incluido en main, con sha ya publicado.
       # Reutiliza la imagen publicada, sin compilar una variante nueva.
-      - name: Verificar commit y publicar tag ep2
+      - name: Verificar commit y publicar tag de entrega
         shell: bash
         run: |
           git fetch origin main:refs/remotes/origin/main
           if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo '::error::El tag ep2 debe apuntar a un commit que este en main.'
+            echo '::error::El tag debe apuntar a un commit que este en main.'
             exit 1
           fi
 
@@ -144,5 +145,5 @@ jobs:
           SHA="$(git rev-parse HEAD)"
           docker buildx imagetools inspect "${IMAGE}:sha-${SHA}"
           docker buildx imagetools create --prefer-index=false \
-            --tag "${IMAGE}:ep2" "${IMAGE}:sha-${SHA}"
-          docker buildx imagetools inspect "${IMAGE}:ep2"
+            --tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}:sha-${SHA}"
+          docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}"

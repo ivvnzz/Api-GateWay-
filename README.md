@@ -168,14 +168,14 @@ La configuración limita además el nivel del registro de errores a `crit`, lo q
 
 Este proyecto no implementa por sí solo autenticación, autorización, controles de acceso por usuario ni cifrado TLS de producción. Esas capacidades no deben darse por implementadas por el hecho de existir un Gateway.
 
-## 8. Repositorios del equipo e integración pendiente
+## 8. Repositorios y despliegue del equipo
 
 | Componente | Repositorio | Situación |
 |---|---|---|
-| API Gateway | [ivvnzz/Api-GateWay-](https://github.com/ivvnzz/Api-GateWay-) | Construido, probado y publicado. |
-| Frontend | [JaimeBarrales/Frontend-Nexus](https://github.com/JaimeBarrales/Frontend-Nexus) | Desarrollo del equipo; integración real pendiente. |
-| Modelo y microservicio de IA | [Gaborilincio/modelo-nexus](https://github.com/Gaborilincio/modelo-nexus) | Desarrollo del equipo; integración real pendiente. |
-| Microservicio de Dominio | Pendiente de creación | Será desarrollado en un repositorio independiente. |
+| API Gateway | [ivvnzz/Api-GateWay-](https://github.com/ivvnzz/Api-GateWay-) | Construido y probado; publica `ghcr.io/ivvnzz/nexus-gateway` y enruta `/api/predict` al dominio. |
+| Frontend | [JaimeBarrales/frontnexusJ](https://github.com/JaimeBarrales/frontnexusJ) | Construido y probado; publica `ghcr.io/jaimebarrales/nexus-front`. |
+| Modelo y microservicio de IA | [Gaborilincio/modelo-nexus](https://github.com/Gaborilincio/modelo-nexus) | Invoca el endpoint serverless `nexus-reco` y publica `ghcr.io/gaborilincio/modelo-nexus`. |
+| Microservicio de Dominio | [ivvnzz/nexus-dominio](https://github.com/ivvnzz/nexus-dominio) | Expone y persiste la predicción; publica `nexus-dominio` y `nexus-carga`. Su `compose.yaml` levanta el sistema completo en EC2 con Caddy y HTTPS. |
 
 ### Acuerdos técnicos necesarios
 
@@ -202,4 +202,4 @@ No se desarrollan funcionalidades directamente en `main` o `dev`. La documentaci
 
 **Completado en el Gateway:** imagen Docker, endpoint `/health`, enrutamiento, resolución dinámica, balanceo simulado de dos réplicas de Dominio, pruebas F2/F3, CI y publicación de la imagen `latest` en GHCR.
 
-**Pendiente:** validar la imagen con tag `ep2`, actualizar la evidencia final de entrega y ejecutar la integración con Front, Dominio, IA y demás servicios reales del Compose del equipo.
+**Estado EP3:** el sistema está desplegado en EC2 con Caddy y HTTPS; `POST /api/predict` responde 200, consume `nexus-reco`, devuelve la versión inmutable y persiste el resultado. Falta publicar y desplegar las imágenes `:ep3`, además del worker LLM, autenticación, rate limiting y las rutas EP3 restantes.
