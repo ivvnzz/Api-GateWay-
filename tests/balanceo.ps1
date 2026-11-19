@@ -611,9 +611,10 @@ try {
     $rows = @($ps | Where-Object { $_ -match '\|' })
     $published = @($rows | Where-Object { ($_ -split '\|', 2)[1] -match '->' })
     $hostPorts = @($published | ForEach-Object { [regex]::Matches(($_ -split '\|', 2)[1], ':(\d+)->') | ForEach-Object { $_.Groups[1].Value } } | Select-Object -Unique)
+    $expectedHostPort = ([uri]$BaseUrl).Port.ToString()
     Check 'Hay 5 contenedores (gateway, front, ia y 2 de dominio)' ($rows.Count -eq 5) ("contenedores=" + $rows.Count)
     Check 'Solo un contenedor publica puertos y es el gateway' (($published.Count -eq 1) -and ($published[0] -match 'gateway')) (($rows | ForEach-Object { $_ }) -join ' ; ')
-    Check 'El unico puerto publicado hacia el host es el 8080' (($hostPorts.Count -eq 1) -and ($hostPorts[0] -eq '8080')) ("puertos=" + ($hostPorts -join ','))
+    Check ('El unico puerto publicado hacia el host es el ' + $expectedHostPort) (($hostPorts.Count -eq 1) -and ($hostPorts[0] -eq $expectedHostPort)) ("puertos=" + ($hostPorts -join ','))
 
     # ------------------------------------------------------------ latencias
     Section 'Latencias registradas (no aprueban ni reprueban)'
