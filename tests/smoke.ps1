@@ -313,6 +313,60 @@ try {
     $r = Send-Gw 'POST' '/api/predict' -Body $predict
     Check 'POST /api/predict llega a POST /predict del dominio' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'POST /predict HTTP/1.1') -and ($r.Body.Contains($predict))) (Brief $r)
 
+    $r = Send-Gw 'GET' '/api/campanas/7'
+    Check 'GET /api/campanas/7 llega a GET /campanas/7 del dominio' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /campanas/7 HTTP/1.1')) (Brief $r)
+
+    $r = Send-Gw 'GET' '/api/dominio/campanas/7'
+    Check 'El alias /api/dominio/campanas/7 llega al mismo recurso' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /campanas/7 HTTP/1.1')) (Brief $r)
+
+    $pollingOk = $true
+    foreach ($i in 1..10) {
+        if ((Send-Gw 'GET' ('/api/campanas/7?poll=' + $i)).Status -ne 200) {
+            $pollingOk = $false
+            break
+        }
+    }
+    Check 'Diez GET consecutivos de polling siguen permitidos' $pollingOk
+
+    $getLimit = $null
+    foreach ($i in 1..100) {
+        $candidate = Send-Gw 'GET' ('/api/campanas/7?rafaga=' + $i)
+        if ($candidate.Status -eq 429) {
+            $getLimit = $candidate
+            break
+        }
+    }
+    $getJson = if ($getLimit) { Get-Json $getLimit.Body } else { $null }
+    Check 'Una rafaga GET excesiva termina en 429 JSON con Retry-After 60' (
+        ($null -ne $getLimit) -and
+        (Is-Json $getLimit) -and
+        ($getJson.error -eq 'limite_de_solicitudes_excedido') -and
+        ($getLimit.Headers['retry-after'] -eq '60')
+    ) $(if ($getLimit) { Brief $getLimit } else { 'ninguna de 100 solicitudes devolvio 429' })
+
+    $campana = '{"canal":"email"}'
+    $r = Send-Gw 'POST' '/api/campanas/U100406' -Body $campana
+    Check 'POST /api/campanas/U100406 llega a POST /campanas/U100406' (($r.Status -eq 200) -and (Has-Line $r 'POST /campanas/U100406 HTTP/1.1')) (Brief $r)
+
+    $postLimit = $null
+    foreach ($i in 1..8) {
+        $candidate = Send-Gw 'POST' '/api/campanas/U100406' -Body $campana
+        if ($candidate.Status -eq 429) {
+            $postLimit = $candidate
+            break
+        }
+    }
+    $postJson = if ($postLimit) { Get-Json $postLimit.Body } else { $null }
+    Check 'Una rafaga POST excesiva termina en 429 JSON con Retry-After 60' (
+        ($null -ne $postLimit) -and
+        (Is-Json $postLimit) -and
+        ($postJson.error -eq 'limite_de_solicitudes_excedido') -and
+        ($postLimit.Headers['retry-after'] -eq '60')
+    ) $(if ($postLimit) { Brief $postLimit } else { 'ninguna de 8 solicitudes devolvio 429' })
+
+    $r = Send-Gw 'POST' '/api/dominio/campanas/U100406' -Body $campana
+    Check 'El alias /api/dominio/campanas no evade el limite POST agotado' ($r.Status -eq 429) (Brief $r)
+
     $json = '{"usuario":"u1","k":[1,2,3]}'
     $r = Send-Gw 'POST' '/api/ia/prueba' -Body $json
     Check 'POST /api/ia/... entrega a ia el cuerpo JSON intacto y su Content-Type' (($r.Body.Contains($json)) -and (Has-Prefix $r 'Content-Type: application/json')) (Brief $r)
