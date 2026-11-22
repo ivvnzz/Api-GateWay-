@@ -300,6 +300,18 @@ try {
     $r = Send-Gw 'GET' '/api/dominio/x' -Headers @{ 'X-Forwarded-For' = '6.6.6.6' }
     Check 'El servicio recibe X-Forwarded-Proto y una X-Forwarded-For propia (la falsificada por el cliente se descarta)' ((Has-Prefix $r 'X-Forwarded-Proto: http') -and (Has-Prefix $r 'X-Forwarded-For: ') -and -not (Has-Line $r 'X-Forwarded-For: 6.6.6.6')) (Brief $r)
 
+    $r = Send-Gw 'GET' '/api/health'
+    Check '/api/health llega a GET /salud del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /salud HTTP/1.1')) (Brief $r)
+
+    $r = Send-Gw 'GET' '/api/predicciones/71'
+    Check '/api/predicciones/71 llega a GET /predicciones/71 del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /predicciones/71 HTTP/1.1')) (Brief $r)
+
+    $r = Send-Gw 'GET' '/docs'
+    Check '/docs llega a GET /docs del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /docs HTTP/1.1')) (Brief $r)
+
+    $r = Send-Gw 'GET' '/openapi.json'
+    Check '/openapi.json llega a GET /openapi.json del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /openapi.json HTTP/1.1')) (Brief $r)
+
     # ------------------------------------------------------------ 4. metodos y cuerpos
     Section '4. Metodos HTTP y cuerpos de la peticion'
     foreach ($m in @('GET', 'POST', 'PUT', 'PATCH', 'DELETE')) {
@@ -312,6 +324,22 @@ try {
     $predict = '{"usuario_id":"U100406","k":8}'
     $r = Send-Gw 'POST' '/api/predict' -Body $predict
     Check 'POST /api/predict llega a POST /predict del dominio' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'POST /predict HTTP/1.1') -and ($r.Body.Contains($predict))) (Brief $r)
+
+    $predictLimit = $null
+    foreach ($i in 1..40) {
+        $candidate = Send-Gw 'POST' '/api/predict' -Body $predict
+        if ($candidate.Status -eq 429) {
+            $predictLimit = $candidate
+            break
+        }
+    }
+    $predictJson = if ($predictLimit) { Get-Json $predictLimit.Body } else { $null }
+    Check 'Una rafaga POST /api/predict termina en 429 JSON con Retry-After 60' (
+        ($null -ne $predictLimit) -and
+        (Is-Json $predictLimit) -and
+        ($predictJson.error -eq 'limite_de_solicitudes_excedido') -and
+        ($predictLimit.Headers['retry-after'] -eq '60')
+    ) $(if ($predictLimit) { Brief $predictLimit } else { 'ninguna de 40 solicitudes devolvio 429' })
 
     $r = Send-Gw 'GET' '/api/campanas/7'
     Check 'GET /api/campanas/7 llega a GET /campanas/7 del dominio' (($r.Status -eq 200) -and (Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /campanas/7 HTTP/1.1')) (Brief $r)
