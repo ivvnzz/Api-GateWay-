@@ -303,6 +303,9 @@ try {
     $r = Send-Gw 'GET' '/api/health'
     Check '/api/health llega a GET /salud del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /salud HTTP/1.1')) (Brief $r)
 
+    $r = Send-Gw 'GET' '/api/dashboard'
+    Check '/api/dashboard llega a GET /dashboard del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /dashboard HTTP/1.1')) (Brief $r)
+
     $r = Send-Gw 'GET' '/api/predicciones/71'
     Check '/api/predicciones/71 llega a GET /predicciones/71 del dominio' ((Has-Line $r 'Name: dominio') -and (Has-Line $r 'GET /predicciones/71 HTTP/1.1')) (Brief $r)
 
